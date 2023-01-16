@@ -253,7 +253,10 @@ def generate_random_pruning_mask( ## Layer-wise RANDOM pruning
             additional_choice = np.random.choice(2, size=1, p=[p0, p1])
             choices.append(additional_choice)
 
-        assert len(choices) == n_params_weights, "Not correct number of choices."
+        assert len(choices) == n_params_weights, "Number of choices not correct."
+
+        if np.all(np.array(choices) == 0):
+            choices[0] = 1
         
         mask = np.random.permutation(choices)
         mask = np.reshape(mask, shp)
@@ -263,16 +266,16 @@ def generate_random_pruning_mask( ## Layer-wise RANDOM pruning
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def visualize_fit_history(fit_history: dict):
+def visualize_prune_history(fit_history: dict):
     steps_arr = np.arange(len(fit_history["loss"]))
     steps_arr_val = steps_arr + 1
 
     fig, ax = plt.subplots(figsize=(16, 10))
-    ax.set_title("Loss vs. step", fontsize=22)
-    ax.plot(steps_arr,     fit_history['loss'],       "r-",  label="training") 
-    ax.plot(steps_arr_val, fit_history['val_loss'],   "r--", label="validation") 
-    ax.set_xlabel("Steps / Epochs")
-    ax.set_ylabel("Loss - CategoricalCrossentropy")
+    ax.set_title("Loss vs. Prune-Step", fontsize=22)
+    ax.plot(steps_arr,     fit_history['loss'],       "r-",  label="training-data") 
+    ax.plot(steps_arr_val, fit_history['val_loss'],   "r--", label="validation-data") 
+    ax.set_xlabel("Steps")
+    ax.set_ylabel("Loss - Categorical Crossentropy")
     leg = ax.legend(frameon=True, fontsize=18)
     return fig
 
