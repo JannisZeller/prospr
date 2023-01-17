@@ -13,7 +13,7 @@ Within the "prune loop" at after each batch update, i. e. after setting
 ```
 I directly calculate the gradient $\gamma_m$ and therefore keep track only of the product (or the sum, using the logarithm-trick to prevent underflow). This means I use autodiff to calculate 
 ```math
-\gamma_m = \mathbf{1} - \alpha \frac{\partial^2 \mathcal L(\mathbf{w}_m, \mathcal D_m)}{\partial \mathbf{w}_m^2} \, .
+\gamma_m = \mathbf{1} - \alpha \frac{\partial^2 \mathcal L(\mathbf{w}_{m-1}, \mathcal D_m)}{\partial \mathbf{w}_{m-1}^2} \, .
 ```
 With this approach I do not encounter issues with collapsing or exploding gradients.
 
