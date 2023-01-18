@@ -83,7 +83,7 @@ def print_status_bar(iteration, total, metrics=None):
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def prune_loop(
+def prospr_loop(
     model: keras.Model,
     X_train: np.ndarray, 
     y_train: np.ndarray,
@@ -98,10 +98,7 @@ def prune_loop(
     ## Settings and History
     n_steps = len(X_train) // batch_size
     fit_history = {'loss': [], 'val_loss': []}
-    meta_gradients = model.weights.copy()
-    if logarithmic_mode:
-        for score in meta_gradients:
-            score = tf.math.log(score)
+    Jvs = model.weights.copy()
 
     for epoch in range(0, n_epochs):
         print("Epoch {}/{}".format(epoch+1, n_epochs))
@@ -110,29 +107,20 @@ def prune_loop(
             ## Forward Pass
             X_batch, y_batch = random_batch(X_train, y_train, batch_size)
 
-            ## Optimization step
-            var_updates = []
-            prune_gradients = []
-            with tf.GradientTape(persistent=True) as prune_tape: ## Pruning Step
-                with tf.GradientTape() as tape: # Update Step
+            w_updates = []
+            with tf.GradientTape() as outer_tape: ## Pruning Step
+                with tf.GradientTape() as inner_tape: # Update Step
                     y_pred = model(X_batch, training=True)
                     main_loss = tf.reduce_mean(loss_fn(y_batch, y_pred))
                     loss = tf.add_n([main_loss] + model.losses)
-                gradients = tape.gradient(loss, model.trainable_variables)
-                for var, gradient in zip(model.trainable_variables, gradients):
-                    var_updates.append(var - prune_lr * gradient) ## For Pruning gradient
-            for var, var_update in zip(model.trainable_variables, var_updates):
-                prune_gradient = prune_tape.gradient(var_update, var) 
-                prune_gradients.append(prune_gradient)
-                var.assign(var_update) ## Update
-
-            ## Updating meta gradient
-            if logarithmic_mode:
-                for meta_g, prune_g in zip(meta_gradients, prune_gradients):
-                        meta_g = meta_g + tf.math.log(prune_g)
-            else:
-                for meta_g, prune_g in zip(meta_gradients, prune_gradients):
-                    meta_g = meta_g * prune_g
+                gradients = inner_tape.gradient(loss, model.trainable_variables)
+                for w, g in zip(model.trainable_variables, gradients):
+                    w_updates.append(w - prune_lr * g)
+                int_Jv = tf.reduce_sum([tf.reduce_sum(w_ * tf.stop_gradient(v_)) 
+                    for w_, v_ in zip(w_updates, Jvs)])
+            Jvs = outer_tape.gradient(int_Jv, model.trainable_weights)
+            for w, w_update in zip(model.trainable_variables, w_updates):
+                w.assign(w_update) ## Update
 
             ## Diagnosis
             for metric in metrics:
@@ -155,22 +143,17 @@ def prune_loop(
         for metric in metrics:
             metric.reset_states()
 
-        ## Finishing Meta Gradient
-        if logarithmic_mode:
-            for meta_g in meta_gradients:
-                meta_g = tf.math.exp(meta_g)
-
-        return meta_gradients, fit_history
+        return Jvs, fit_history
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def compute_saliency_scores(
-    meta_gradients: list[np.ndarray],
+def compute_prospr_scores(
+    Jvs: list[np.ndarray],
     model: keras.Model,
     X_train: np.ndarray, 
     y_train: np.ndarray,
     loss_fn: keras.losses.Loss,
-    logarithmic_mode: bool=True):
+    ):
 
     ## Final Prune Factor (maybe switch X_train, y_train to X_batch, y_batch ~ last batch)
     with tf.GradientTape() as tape:
@@ -179,47 +162,45 @@ def compute_saliency_scores(
         total_loss = tf.add_n([main_loss] + model.losses)
         final_prune_gradients = tape.gradient(total_loss, model.trainable_variables)
 
-    if logarithmic_mode:
-        for meta_g, prune_g in zip(meta_gradients, final_prune_gradients):
-            meta_g = tf.math.exp(tf.math.log(meta_g) + tf.math.log(prune_g))
-    else:
-        for meta_g, prune_g in zip(meta_gradients, final_prune_gradients):
-            meta_g = meta_g * prune_g
+
+
+    for Jv, g_prune in zip(Jvs, final_prune_gradients):
+        Jv = Jv * g_prune
 
     ## Generate Saliency Scores
     denominator = 0
-    for meta_g in meta_gradients:
-        denominator += tf.reduce_sum(meta_g)
-    scaliency_scores = meta_gradients.copy()
-    for score in scaliency_scores:
-        score.assign(tf.abs(score / denominator))
+    for Jv in Jvs:
+        denominator += tf.reduce_sum(Jv)
+    scores = Jvs.copy()
+    for score in scores:
+        score = tf.abs(score / denominator)
 
-    return scaliency_scores
+    return scores
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def generate_pruning_maskDEPR( ## Total pruning (not layer-wise) DEPRECATED
-    saliency_scores,
+    scores,
     keep_top: float=0.2):
 
     flattened_scores = np.concatenate([
-        score.numpy().flatten() for score in saliency_scores
+        score.numpy().flatten() for score in scores
     ])
     quantile = np.quantile(flattened_scores, q=1-keep_top)
 
     masks = []
-    for score in saliency_scores:
+    for score in scores:
         mask = tf.cast(score > quantile, dtype=tf.int16)
         masks.append(mask)
     
     return masks
 
 def generate_pruning_mask( ## Layer-wise pruning
-    saliency_scores,
+    scores,
     sparsity: float=0.8):
 
     masks = []
-    for score in saliency_scores:
+    for score in scores:
         score_flat = score.numpy().flatten()
         quantile = np.quantile(
             score_flat, 
