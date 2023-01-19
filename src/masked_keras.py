@@ -30,6 +30,43 @@ from tensorflow.keras.layers import Conv2D, Dense
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 class MaskedModel(keras.Model):
+    def __init__(self, 
+        masks: list[tf.Tensor], 
+        kernel: keras.Model):
+        """ 
+        Creates a masked version of the `kernel`-model. This abstract class is 
+        used as a template for the two versions below - one with trainable masks
+        and one with fixed masks. 
+
+        Parameters
+        ----------
+        masks : list[tf.Tensor]
+            List of Tensors containing the masks for all layers of the model. 
+            Can be of any dtype, that is convertible to floats. 
+            Typically only containing 0 or 1.
+        kernel
+            The model whichs parameters should be masked.
+        """
+        super().__init__()
+
+        ## For Reset
+        #  If the kernel-model itself gets stored / copied for reset-purposes
+        #  this model gets additional trainable parameters, that do not have any
+        #  Purpose and cause error. Therefore just store the weights and 
+        #  reconstruct the model structure externally (via a function).
+        self.w_init = kernel.get_weights()
+        if isinstance(masks[0], tf.Tensor):
+            self.masks_init  = [mask.numpy() for mask in masks]
+        elif isinstance(masks[0], np.ndarray):
+            self.masks_init  = [mask for mask in masks]
+        else:
+            raise(ValueError, "No suitable type of masks provided.")
+
+        ## Internals
+        self.kernel = kernel
+        self.proper_weights = kernel.trainable_weights
+        self.proper_dtypes = [w.dtype for w in self.proper_weights]
+        self.proper_names  = [w.name[:-2]  for w in self.proper_weights]
 
 
     def get_masks(self):
@@ -80,40 +117,28 @@ class StaticMaskedModel(MaskedModel):
         kernel
             The model whichs parameters should be masked.
         """
-        super().__init__()
-
-        ## For Reset
-        self.w_init = kernel.get_weights()
-        if isinstance(masks[0], tf.Tensor):
-            self.masks_init  = [mask.numpy() for mask in masks]
-        elif isinstance(masks[0], np.ndarray):
-            self.masks_init  = [mask for mask in masks]
-        else:
-            raise(ValueError, "No suitable type of masks provided.")
-
-        ## Internals
-        self.kernel = kernel
-        self.proper_weights = kernel.trainable_weights
-        self.proper_dtypes = [w.dtype for w in self.proper_weights]
-        self.proper_names  = [w.name[:-2]  for w in self.proper_weights]
-        self.masks  = [
-            tf.constant(tf.cast(mask, dtype=w.dtype))
-            for mask, w in zip(masks, kernel.trainable_weights)]
+        super().__init__(masks, kernel)
+        ## Creating Masks
+        self.__create_masks(masks, kernel)
 
 
-
-        ## Everything above to base class
-        # ░█──░█ ░█▀▀▀█ ░█▀▀█ ░█─▄▀ ▀█▀ ░█▄─░█ ░█▀▀█     ░█─░█ ░█▀▀▀ ░█▀▀█ ░█▀▀▀
-        # ░█░█░█ ░█──░█ ░█▄▄▀ ░█▀▄─ ░█─ ░█░█░█ ░█─▄▄     ░█▀▀█ ░█▀▀▀ ░█▄▄▀ ░█▀▀▀
-        # ░█▄▀▄█ ░█▄▄▄█ ░█─░█ ░█─░█ ▄█▄ ░█──▀█ ░█▄▄█     ░█─░█ ░█▄▄▄ ░█─░█ ░█▄▄▄
-
-    def call(self, inputs):
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
         """Forward pass, applying mask.
         """
         for w, mask in zip(self.kernel.trainable_weights, self.masks):
             # w.assign( w * mask )
             w.assign(w * mask)
         return self.kernel(inputs)
+
+
+    def __create_masks(self, 
+        masks: list[tf.Tensor], 
+        kernel: keras.Model):
+        """Creating untrainable Masks
+        """
+        self.masks  = [
+            tf.constant(tf.cast(mask, dtype=w.dtype))
+            for mask, w in zip(masks, kernel.trainable_weights)]
 
 
 
@@ -140,37 +165,9 @@ class TrackableMaskedModel(MaskedModel):
         kernel
             The model whichs parameters should be masked.
         """
-        super().__init__()
-
-        ## For Reset
-        self.w_init = kernel.get_weights()
-        if isinstance(masks[0], tf.Tensor):
-            self.masks_init  = [mask.numpy() for mask in masks]
-        elif isinstance(masks[0], np.ndarray):
-            self.masks_init  = [mask for mask in masks]
-        else:
-            raise(ValueError, "No suitable type of masks provided.")
-
-        ## Internals
-        self.kernel = kernel
-        self.proper_weights = kernel.trainable_weights
-        self.proper_dtypes = [w.dtype for w in self.proper_weights]
-        self.proper_names  = [w.name[:-2]  for w in self.proper_weights]
-        self.masks  = [
-            tf.Variable(
-                tf.cast(mask, dtype=w.dtype), 
-                trainable=True,
-                name=w.name[:-2]+"/mask")
-            for mask, w in zip(masks, kernel.trainable_weights)]
-
-
-
-        ## Everything above to base class
-        # ░█──░█ ░█▀▀▀█ ░█▀▀█ ░█─▄▀ ▀█▀ ░█▄─░█ ░█▀▀█     ░█─░█ ░█▀▀▀ ░█▀▀█ ░█▀▀▀
-        # ░█░█░█ ░█──░█ ░█▄▄▀ ░█▀▄─ ░█─ ░█░█░█ ░█─▄▄     ░█▀▀█ ░█▀▀▀ ░█▄▄▀ ░█▀▀▀
-        # ░█▄▀▄█ ░█▄▄▄█ ░█─░█ ░█─░█ ▄█▄ ░█──▀█ ░█▄▄█     ░█─░█ ░█▄▄▄ ░█─░█ ░█▄▄▄
-
-
+        super().__init__(masks, kernel)
+        ## Creating Masks
+        self.__create_masks(masks, kernel)
 
         ## Overriding Forward Passes
         #  If Biases are not used this has to be changed!
@@ -179,41 +176,67 @@ class TrackableMaskedModel(MaskedModel):
                 tf.add(
                     tf.matmul(
                         inputs,
-                        self.weights[0] * self.mask[0]),
-                    self.weights[1] * self.mask[1]))
+                        self.weights[0] * self.masks[0]),
+                    self.weights[1] * self.masks[1]))
 
         def masked_conv2D_forward(self, inputs):
             return self.activation(
                 tf.add(
                     tf.nn.conv2d(
                         input=inputs, 
-                        filters=self.kernel * self.mask[0], 
+                        filters=self.kernel * self.masks[0], 
                         strides=self.strides, 
                         padding=self.padding.upper()),
-                    self.bias * self.mask[1]))
+                    self.bias * self.masks[1]))
 
         mask_idx = 0
         for layer in self.kernel.layers:
 
             if isinstance(layer, Dense):
-                print("Masking", layer, sep=" ")
-                mask_idx_up = mask_idx + len(layer.weights)
-                layer.mask = self.masks[mask_idx : mask_idx_up]
-                layer.call = masked_dense_forward.__get__(layer, Dense)
-                mask_idx = mask_idx_up
+                mask_idx = self.__override_forward_pass(
+                    layer, mask_idx, 
+                    masked_dense_forward.__get__(layer, Dense))
 
             if isinstance(layer, Conv2D):
-                print("Masking", layer, sep=" ")
-                mask_idx_up = mask_idx + len(layer.weights)
-                layer.mask = self.masks[mask_idx : mask_idx_up]
-                layer.call = masked_conv2D_forward.__get__(layer, Dense)
-                mask_idx = mask_idx_up
+                mask_idx = self.__override_forward_pass(
+                    layer, mask_idx, 
+                    masked_conv2D_forward.__get__(layer, Conv2D))
 
 
-    def call(self, inputs):
+    def call(self, inputs) -> tf.Tensor:
         """Forward pass, mask is applied at each layer internally.
         """
         return self.kernel(inputs)
+
+
+    def __create_masks(self, 
+        masks: list[tf.Tensor], 
+        kernel: keras.Model) -> None:
+        """Creating trainable Masks
+        """
+        self.masks  = [
+            tf.Variable(
+                tf.cast(mask, dtype=w.dtype), 
+                trainable=True,
+                name=w.name[:-2]+"/mask")
+            for mask, w in zip(masks, kernel.trainable_weights)]
+
+
+    def __override_forward_pass(self,
+        layer: keras.layers.Layer, 
+        mask_idx: int, 
+        masked_forwad: Callable) -> int:
+        """Abbreviator to override forward passes.
+
+        Returns
+        -------
+            Index of the next layers first mask.
+        """        
+        print("Masking", layer, sep=" ")
+        mask_idx_up = mask_idx + len(layer.weights)
+        layer.masks = self.masks[mask_idx : mask_idx_up]
+        layer.call = masked_forwad
+        return mask_idx_up
 
 
 # ------------------------------------------------------------------------------

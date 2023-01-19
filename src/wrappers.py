@@ -91,104 +91,6 @@ def non_random_batch(X, y, n, batch_size=128):
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def print_status_bar(iteration, total, metrics=None):
-    metrics = " - ".join([
-        "{}: {:.4f}".format(m.name, m.result())
-        for m in (metrics or [])
-    ])
-    end = "" if iteration < total else "\n"
-    print("\r{}/{} - ".format(iteration, total) + metrics,
-        end=end)
-
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def prospr_loop(        # TODO: Update to new mode with masked networks
-    model: keras.Model,
-    X_train: np.ndarray, 
-    y_train: np.ndarray,
-    loss_fn: keras.losses.Loss,
-    metrics: list[keras.metrics.Metric],
-    optimizer: keras.optimizers.Optimizer=None,
-    validation_data: tuple[np.ndarray]=None,
-    prune_sg_lr: float=0.01,
-    n_epochs: int=1, 
-    batch_size: int=128):    
-
-    ## Warning
-    if optimizer is not None:
-        print("Warning: Specifying a custom optimizer leads to backpropagation through all batches and instabilities. Consider just using vanilla SGD.")
-        c = [tf.ones_like(w) for w in model.trainable_weights]
-        masked_model = StaticMaskedModel(c, model)
-
-    ## Settings and History
-    n_steps = len(X_train) // batch_size
-    fit_history = {'loss': [], 'val_loss': []}
-    Jvs = [tf.Variable(var) for var in model.get_weights()]
-
-    for epoch in range(0, n_epochs):
-        print("Epoch {}/{}".format(epoch+1, n_epochs))
-        for step in range(0, n_steps):
-
-            ## Forward Pass
-            X_batch, y_batch = random_batch(X_train, y_train, batch_size)
-
-
-            ## Vanilla SGD Mode:
-            # - - - - - - - - -
-            if optimizer is None:
-                w_updates = []
-                with tf.GradientTape() as outer_tape: ## Pruning Step
-                    with tf.GradientTape() as inner_tape: # Update Step
-                        y_pred = model(X_batch, training=True)
-                        main_loss = tf.reduce_mean(loss_fn(y_batch, y_pred))
-                        loss = tf.add_n([main_loss] + model.losses)
-                    gradients = inner_tape.gradient(loss, model.trainable_weights)
-                    for w, g in zip(model.trainable_weights, gradients):
-                        w_updates.append(w - prune_sg_lr * g)
-
-                    int_Jv = tf.reduce_sum([tf.reduce_sum(w_ * tf.stop_gradient(v_)) 
-                        for w_, v_ in zip(w_updates, Jvs)])
-                Jvs = outer_tape.gradient(int_Jv, model.trainable_weights)
-                for w, w_update in zip(model.trainable_weights, w_updates):
-                    w.assign(w_update) ## Update
-
-
-            ## Custom Optimizer Mode:
-            # - - - - - - - - - - - -
-            if optimizer is not None:
-                with tf.GradientTape(persistent=True) as tape: # Update Step
-                    y_pred = masked_model(X_batch, training=True)
-                    main_loss = tf.reduce_mean(loss_fn(y_batch, y_pred))
-                    loss = tf.add_n([main_loss] + model.losses)
-                gradients = inner_tape.gradient(loss, model.trainable_weights)
-                    
-
-
-            ## Diagnosis
-            for metric in metrics:
-                metric(y_batch, y_pred)
-
-            ## Validation Loss
-            if validation_data is not None:
-                val_loss = loss_fn(
-                    validation_data[1], 
-                    model(validation_data[0], training=False))
-
-            ## Fit History
-            fit_history['loss'].append(main_loss.numpy())
-            if validation_data is not None:
-                fit_history['val_loss'].append(val_loss.numpy())
-
-            ## Diagnosis
-            print_status_bar((step+1) * batch_size, len(y_train), metrics)
-        print_status_bar(len(y_train), len(y_train), metrics)
-        for metric in metrics:
-            metric.reset_states()
-
-        return Jvs, fit_history
-
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def compute_prospr_scores(
     Jvs: list[np.ndarray],
     model: MaskedModel,
@@ -304,7 +206,7 @@ def generate_random_pruning_mask( ## Layer-wise RANDOM pruning
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def visualize_prune_history(fit_history: dict):
+def visualize_prune_history_DEPR(fit_history: dict):
     steps_arr = np.arange(len(fit_history["loss"]))
     steps_arr_val = steps_arr + 1
 
