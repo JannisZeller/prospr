@@ -18,11 +18,23 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import tensorflow.keras as keras
 
+from .masked_keras import MaskedModel, StaticMaskedModel, TrackableMaskedModel
+
 # ------------------------------------------------------------------------------
 
 
 # %% Implementation
 # ------------------------------------------------------------------------------
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+def mean_rel_diff(score1, score2):
+    mean_val = np.abs(np.mean(score1) / 2. + np.mean(score2) / 2.)
+    diff = np.mean(np.abs(score1 - score2))
+    if diff == 0: 
+        return diff
+    else: 
+        return diff / mean_val
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -72,6 +84,13 @@ def random_batch(X, y, batch_size=128):
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+def non_random_batch(X, y, n, batch_size=128):
+    X_batch = X[n*batch_size : (n+1)*batch_size]
+    y_batch = y[n*batch_size : (n+1)*batch_size]
+    return X_batch, y_batch
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def print_status_bar(iteration, total, metrics=None):
     metrics = " - ".join([
         "{}: {:.4f}".format(m.name, m.result())
@@ -83,22 +102,28 @@ def print_status_bar(iteration, total, metrics=None):
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def prospr_loop(
+def prospr_loop(        # TODO: Update to new mode with masked networks
     model: keras.Model,
     X_train: np.ndarray, 
     y_train: np.ndarray,
     loss_fn: keras.losses.Loss,
     metrics: list[keras.metrics.Metric],
-    logarithmic_mode: bool=True,
+    optimizer: keras.optimizers.Optimizer=None,
     validation_data: tuple[np.ndarray]=None,
-    prune_lr: float=0.01,
+    prune_sg_lr: float=0.01,
     n_epochs: int=1, 
-    batch_size: int=128):
-    
+    batch_size: int=128):    
+
+    ## Warning
+    if optimizer is not None:
+        print("Warning: Specifying a custom optimizer leads to backpropagation through all batches and instabilities. Consider just using vanilla SGD.")
+        c = [tf.ones_like(w) for w in model.trainable_weights]
+        masked_model = StaticMaskedModel(c, model)
+
     ## Settings and History
     n_steps = len(X_train) // batch_size
     fit_history = {'loss': [], 'val_loss': []}
-    Jvs = model.weights.copy()
+    Jvs = [tf.Variable(var) for var in model.get_weights()]
 
     for epoch in range(0, n_epochs):
         print("Epoch {}/{}".format(epoch+1, n_epochs))
@@ -107,20 +132,37 @@ def prospr_loop(
             ## Forward Pass
             X_batch, y_batch = random_batch(X_train, y_train, batch_size)
 
-            w_updates = []
-            with tf.GradientTape() as outer_tape: ## Pruning Step
-                with tf.GradientTape() as inner_tape: # Update Step
-                    y_pred = model(X_batch, training=True)
+
+            ## Vanilla SGD Mode:
+            # - - - - - - - - -
+            if optimizer is None:
+                w_updates = []
+                with tf.GradientTape() as outer_tape: ## Pruning Step
+                    with tf.GradientTape() as inner_tape: # Update Step
+                        y_pred = model(X_batch, training=True)
+                        main_loss = tf.reduce_mean(loss_fn(y_batch, y_pred))
+                        loss = tf.add_n([main_loss] + model.losses)
+                    gradients = inner_tape.gradient(loss, model.trainable_weights)
+                    for w, g in zip(model.trainable_weights, gradients):
+                        w_updates.append(w - prune_sg_lr * g)
+
+                    int_Jv = tf.reduce_sum([tf.reduce_sum(w_ * tf.stop_gradient(v_)) 
+                        for w_, v_ in zip(w_updates, Jvs)])
+                Jvs = outer_tape.gradient(int_Jv, model.trainable_weights)
+                for w, w_update in zip(model.trainable_weights, w_updates):
+                    w.assign(w_update) ## Update
+
+
+            ## Custom Optimizer Mode:
+            # - - - - - - - - - - - -
+            if optimizer is not None:
+                with tf.GradientTape(persistent=True) as tape: # Update Step
+                    y_pred = masked_model(X_batch, training=True)
                     main_loss = tf.reduce_mean(loss_fn(y_batch, y_pred))
                     loss = tf.add_n([main_loss] + model.losses)
-                gradients = inner_tape.gradient(loss, model.trainable_variables)
-                for w, g in zip(model.trainable_variables, gradients):
-                    w_updates.append(w - prune_lr * g)
-                int_Jv = tf.reduce_sum([tf.reduce_sum(w_ * tf.stop_gradient(v_)) 
-                    for w_, v_ in zip(w_updates, Jvs)])
-            Jvs = outer_tape.gradient(int_Jv, model.trainable_weights)
-            for w, w_update in zip(model.trainable_variables, w_updates):
-                w.assign(w_update) ## Update
+                gradients = inner_tape.gradient(loss, model.trainable_weights)
+                    
+
 
             ## Diagnosis
             for metric in metrics:
@@ -149,31 +191,45 @@ def prospr_loop(
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def compute_prospr_scores(
     Jvs: list[np.ndarray],
-    model: keras.Model,
+    model: MaskedModel,
     X_train: np.ndarray, 
     y_train: np.ndarray,
     loss_fn: keras.losses.Loss,
-    ):
+    prune_sg_lr: float=0.1):
 
     ## Final Prune Factor (maybe switch X_train, y_train to X_batch, y_batch ~ last batch)
     with tf.GradientTape() as tape:
         y_pred = model(X_train, training=True)
         main_loss = tf.reduce_mean(loss_fn(y_train, y_pred))
         total_loss = tf.add_n([main_loss] + model.losses)
-        final_prune_gradients = tape.gradient(total_loss, model.trainable_variables)
+    final_prune_gradients = tape.gradient(total_loss, model.proper_weights)
+    for w, g in zip(model.proper_weights, final_prune_gradients):
+        w.assign(w - prune_sg_lr * g) # Final Update step
 
-
-
+    meta_gradients = []
     for Jv, g_prune in zip(Jvs, final_prune_gradients):
-        Jv = Jv * g_prune
+        meta_gradients.append(Jv * g_prune)
 
     ## Generate Saliency Scores
     denominator = 0
-    for Jv in Jvs:
-        denominator += tf.reduce_sum(Jv)
-    scores = Jvs.copy()
-    for score in scores:
-        score = tf.abs(score / denominator)
+    for meta_g in meta_gradients:
+        denominator += tf.reduce_sum(meta_g)
+    scores = []
+    for meta_g in meta_gradients:
+        scores.append(tf.abs(meta_g / denominator))
+
+    return scores
+
+
+def compute_prospr_scores_from_meta_g(meta_gradients: list[np.ndarray]):
+
+    ## Generate Saliency Scores
+    denominator = 0
+    for meta_g in meta_gradients:
+        denominator += tf.reduce_sum(meta_g)
+    scores = []
+    for meta_g in meta_gradients:
+        scores.append(tf.abs(meta_g / denominator))
 
     return scores
 
@@ -191,13 +247,14 @@ def generate_pruning_maskDEPR( ## Total pruning (not layer-wise) DEPRECATED
     masks = []
     for score in scores:
         mask = tf.cast(score > quantile, dtype=tf.int16)
-        masks.append(mask)
+        masks.append(mask.numpy())
     
     return masks
 
 def generate_pruning_mask( ## Layer-wise pruning
     scores,
-    sparsity: float=0.8):
+    sparsity: float=0.8, 
+    dtype=tf.float32):
 
     masks = []
     for score in scores:
@@ -205,7 +262,7 @@ def generate_pruning_mask( ## Layer-wise pruning
         quantile = np.quantile(
             score_flat, 
             q=np.clip(sparsity, a_min=0., a_max=1.))
-        mask = tf.cast(score > quantile, dtype=tf.int16)
+        mask = tf.cast(score > quantile, dtype=dtype)
         masks.append(mask)
     
     return masks
