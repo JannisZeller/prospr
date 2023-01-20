@@ -67,7 +67,7 @@ def load_mnist(n_test_data: int=60000):
     X_test  = normalize_img_data(X_test)
 
     ## Shuffeling
-    shuffler = np.random.permutation(len(X_test))
+    shuffler = np.random.permutation(len(y_train))
     X_train = X_train[shuffler]
     y_train = y_train[shuffler]
 
