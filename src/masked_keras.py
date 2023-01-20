@@ -190,15 +190,18 @@ class TrackableMaskedModel(MaskedModel):
                     self.bias * self.masks[1]))
 
         mask_idx = 0
+        self.unmasked_forwards = []
         for layer in self.kernel.layers:
 
             if isinstance(layer, Dense):
-                mask_idx = self.__override_forward_pass(
+                self.unmasked_forwards.append(layer.call)
+                mask_idx = self.__override_forward(
                     layer, mask_idx, 
                     masked_dense_forward.__get__(layer, Dense))
 
             if isinstance(layer, Conv2D):
-                mask_idx = self.__override_forward_pass(
+                self.unmasked_forwards.append(layer.call)
+                mask_idx = self.__override_forward(
                     layer, mask_idx, 
                     masked_conv2D_forward.__get__(layer, Conv2D))
 
@@ -207,6 +210,15 @@ class TrackableMaskedModel(MaskedModel):
         """Forward pass, mask is applied at each layer internally.
         """
         return self.kernel(inputs)
+
+    
+    def unmask_forward_passes(self) -> None:
+        ## Reset layers forward passes (for ProsPr after first call.)
+        mask_idx = 0
+        for layer in self.kernel.layers:
+            if isinstance(layer, Dense) or isinstance(layer, Conv2D):
+                layer.call = self.unmasked_forwards[mask_idx]
+                mask_idx +=1
 
 
     def __create_masks(self, 
@@ -222,7 +234,7 @@ class TrackableMaskedModel(MaskedModel):
             for mask, w in zip(masks, kernel.trainable_weights)]
 
 
-    def __override_forward_pass(self,
+    def __override_forward(self,
         layer: keras.layers.Layer, 
         mask_idx: int, 
         masked_forwad: Callable) -> int:

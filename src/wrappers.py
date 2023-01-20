@@ -103,25 +103,55 @@ def non_random_batch(X, y, n, batch_size=128):
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def compute_prospr_scores(
-    Jvs: list[np.ndarray],
+    Jvps: list[np.ndarray],
     model: MaskedModel,
     X_train: np.ndarray, 
     y_train: np.ndarray,
     loss_fn: keras.losses.Loss,
     prune_sg_lr: float=0.1):
 
-    ## Final Prune Factor (maybe switch X_train, y_train to X_batch, y_batch ~ last batch)
+    ## Final Prune Factor (maybe switch X_train, y_train to X_batch, y_batch ~ last batch) 
     with tf.GradientTape() as tape:
         y_pred = model(X_train, training=True)
-        main_loss = tf.reduce_mean(loss_fn(y_train, y_pred))
-        total_loss = tf.add_n([main_loss] + model.losses)
-    final_prune_gradients = tape.gradient(total_loss, model.proper_weights)
+        loss = loss_fn(y_train, y_pred)
+    final_prune_gradients = tape.gradient(loss, model.proper_weights)
     for w, g in zip(model.proper_weights, final_prune_gradients):
         w.assign(w - prune_sg_lr * g) # Final Update step
 
     meta_gradients = []
-    for Jv, g_prune in zip(Jvs, final_prune_gradients):
-        meta_gradients.append(Jv * g_prune)
+    for Jvp, g_prune in zip(Jvps, final_prune_gradients):
+        meta_gradients.append(Jvp * g_prune)
+
+    ## Generate Saliency Scores
+    denominator = 0
+    for meta_g in meta_gradients:
+        denominator += tf.reduce_sum(meta_g)
+    scores = []
+    for meta_g in meta_gradients:
+        scores.append(tf.abs(meta_g / denominator))
+
+    return scores
+
+
+def compute_prospr_scores_unmasked_model(
+    Jvps: list[np.ndarray],
+    model: keras.Model,
+    X_train: np.ndarray, 
+    y_train: np.ndarray,
+    loss_fn: keras.losses.Loss,
+    prune_sg_lr: float=0.1):
+
+    ## Final Prune Factor (maybe switch X_train, y_train to X_batch, y_batch ~ last batch) 
+    with tf.GradientTape() as tape:
+        y_pred = model(X_train, training=True)
+        loss = loss_fn(y_train, y_pred)
+    final_prune_gradients = tape.gradient(loss, model.trainable_weights)
+    for w, g in zip(model.trainable_weights, final_prune_gradients):
+        w.assign(w - prune_sg_lr * g) # Final Update step
+
+    meta_gradients = []
+    for Jvp, g_prune in zip(Jvps, final_prune_gradients):
+        meta_gradients.append(Jvp * g_prune)
 
     ## Generate Saliency Scores
     denominator = 0
@@ -175,7 +205,7 @@ def generate_pruning_mask( ## Layer-wise pruning
         quantile = np.quantile(
             score_flat, 
             q=np.clip(sparsity, a_min=0., a_max=1.))
-        mask = tf.cast(score > quantile, dtype=dtype)
+        mask = tf.cast(score > quantile, dtype=dtype).numpy()
         masks.append(mask)
     
     return masks
@@ -210,8 +240,7 @@ def generate_random_pruning_mask( ## Layer-wise RANDOM pruning
             choices[0] = 1
         
         mask = np.random.permutation(choices)
-        mask = np.reshape(mask, shp)
-        masks.append(tf.constant(mask, dtype=tf.float32))
+        masks.append(np.reshape(mask, shp))
     
     return masks
 
