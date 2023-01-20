@@ -28,13 +28,17 @@ from .masked_keras import MaskedModel, StaticMaskedModel, TrackableMaskedModel
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def mean_rel_diff(score1, score2):
-    mean_val = np.abs(np.mean(score1) / 2. + np.mean(score2) / 2.)
-    diff = np.mean(np.abs(score1 - score2))
-    if diff == 0: 
-        return diff
-    else: 
-        return diff / mean_val
+def mean_rel_diff(x1, x2):
+    ## Calculating the mean magnitude for each element
+    means = ( np.abs(x1) + np.abs(x2) ) / 2.
+    ## Replacing nans with infs (means=0 where diffs=0)
+    means[means==0] = np.inf
+    ## Calculating the absolute differences 
+    diffs = np.abs(x1 - x2)
+    ## Calculaing relative (to mean magnitude) absolute differences
+    rel_diffs = diffs / means
+    
+    return np.mean(rel_diffs)
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -62,6 +66,11 @@ def load_mnist(n_test_data: int=60000):
     X_train = normalize_img_data(X_train)[:n_test_data]
     X_test  = normalize_img_data(X_test)
 
+    ## Shuffeling
+    shuffler = np.random.permutation(len(X_test))
+    X_train = X_train[shuffler]
+    y_train = y_train[shuffler]
+
     ## Reshaping
     y_train = keras.utils.to_categorical(y_train, num_classes)[:n_test_data]
     y_test  = keras.utils.to_categorical(y_test, num_classes)
@@ -85,6 +94,8 @@ def random_batch(X, y, batch_size=128):
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def non_random_batch(X, y, n, batch_size=128):
+    n_max = X.shape[0] // batch_size
+    n = n%n_max
     X_batch = X[n*batch_size : (n+1)*batch_size]
     y_batch = y[n*batch_size : (n+1)*batch_size]
     return X_batch, y_batch
@@ -206,14 +217,16 @@ def generate_random_pruning_mask( ## Layer-wise RANDOM pruning
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def visualize_prune_history_DEPR(fit_history: dict):
-    steps_arr = np.arange(len(fit_history["loss"]))
-    steps_arr_val = steps_arr + 1
+def visualize_fit_history(
+    steps: np.ndarray, 
+    loss: np.ndarray,
+    acc: np.ndarray=None):
 
     fig, ax = plt.subplots(figsize=(16, 10))
-    ax.set_title("Loss vs. Prune-Step", fontsize=22)
-    ax.plot(steps_arr,     fit_history['loss'],       "r-",  label="training-data") 
-    ax.plot(steps_arr_val, fit_history['val_loss'],   "r--", label="validation-data") 
+    ax.set_title("Loss vs. Step", fontsize=22)
+    ax.plot(steps, loss, "r-",  label="loss") 
+    if acc:
+        ax.plot(steps, acc,   "r--", label="Accuracy") 
     ax.set_xlabel("Steps")
     ax.set_ylabel("Loss - Categorical Crossentropy")
     leg = ax.legend(frameon=True, fontsize=18)
