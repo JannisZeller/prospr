@@ -23,12 +23,12 @@ from .masked_keras import MaskedModel, StaticMaskedModel, TrackableMaskedModel
 # ------------------------------------------------------------------------------
 
 
-# %% Implementation
+# %% Utils
 # ------------------------------------------------------------------------------
 
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def mean_rel_diff(x1, x2):
+    """Mean-Relative Difference between to tensors of arbitrary shape
+    """
     ## Calculating the mean magnitude for each element
     means = ( np.abs(x1) + np.abs(x2) ) / 2.
     ## Replacing nans with infs (means=0 where diffs=0)
@@ -41,15 +41,17 @@ def mean_rel_diff(x1, x2):
     return np.mean(rel_diffs)
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def normalize_img_data(X: np.ndarray) -> np.ndarray:
+    """Img-Preprocessing
+    """
     X = X.astype(np.float32) / 255.
     X = np.expand_dims(X, -1)
     return X
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def load_mnist(n_test_data: int=60000):
+    """MNist loading and preprocessing
+    """
     (X_train, y_train), (X_test, y_test) = keras.datasets.mnist.load_data()
     assert X_train.shape == (60000, 28, 28)
     assert X_test.shape  == (10000, 28, 28)
@@ -78,22 +80,25 @@ def load_mnist(n_test_data: int=60000):
     return (X_train, y_train), (X_test, y_test)
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def simple_accuracy(model, X, y):
+def model_accuracy(model, X, y):
+    """Accuracy Macro
+    """
     y_pred = model(X)
     y_pred = tf.cast(tf.argmax(y_pred, axis=1), tf.int32)
     y      = tf.cast(tf.argmax(y, axis=1), tf.int32)
     return tf.reduce_mean(tf.cast(y_pred == y, tf.float32)).numpy()
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def random_batch(X, y, batch_size=128):
+    """Generates random batches from data
+    """
     idx = np.random.randint(len(X), size=batch_size)
     return X[idx], y[idx]
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def non_random_batch(X, y, n, batch_size=128):
+    """Generates deterministic batches from data (for reproducability).
+    """
     n_max = X.shape[0] // batch_size
     n = n%n_max
     X_batch = X[n*batch_size : (n+1)*batch_size]
@@ -101,7 +106,13 @@ def non_random_batch(X, y, n, batch_size=128):
     return X_batch, y_batch
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+## ProsPr Scores: 
+#  These would be the last necessairy steps to calculate the scores if the 
+#  calculation of meta gradients and / or streaming product would work.
+# ------------------------------------------------------------------------------
+
 def compute_prospr_scores(
     Jvps: list[np.ndarray],
     model: MaskedModel,
@@ -177,11 +188,15 @@ def compute_prospr_scores_from_meta_g(meta_gradients: list[np.ndarray]):
     return scores
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def generate_pruning_maskDEPR( ## Total pruning (not layer-wise) DEPRECATED
+
+
+## Pruning Mask Generatirs
+# ------------------------------------------------------------------------------
+def generate_total_pruning_mask(
     scores,
     keep_top: float=0.2):
-
+    """Generates total (not layer-wise) pruning masks from scores. 
+    """
     flattened_scores = np.concatenate([
         score.numpy().flatten() for score in scores
     ])
@@ -194,28 +209,30 @@ def generate_pruning_maskDEPR( ## Total pruning (not layer-wise) DEPRECATED
     
     return masks
 
-def generate_pruning_mask( ## Layer-wise pruning
+
+def generate_pruning_mask(
     scores,
     sparsity: float=0.8, 
     dtype=tf.float32):
-
+    """Generates layer-wise pruning masks from scores.
+    """
     masks = []
     for score in scores:
         score_flat = score.numpy().flatten()
         quantile = np.quantile(
             score_flat, 
             q=np.clip(sparsity, a_min=0., a_max=1.))
-        mask = tf.cast(score > quantile, dtype=dtype).numpy()
+        mask = tf.cast(score > quantile, dtype=dtype).numpy() 
         masks.append(mask)
     
     return masks
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def generate_random_pruning_mask( ## Layer-wise RANDOM pruning
     weight_shapes: list[tf.TensorShape], 
     sparsity: float=0.8):
-
+    """Generates layer-wise random pruning masks.
+    """
     masks = []
     for shp in weight_shapes:
         n_params_weights = shp.num_elements()
@@ -243,35 +260,5 @@ def generate_random_pruning_mask( ## Layer-wise RANDOM pruning
         masks.append(np.reshape(mask, shp))
     
     return masks
-
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-def visualize_fit_history(
-    steps: np.ndarray, 
-    loss: np.ndarray,
-    acc: np.ndarray=None):
-
-    fig, ax = plt.subplots(figsize=(16, 10))
-    ax.set_title("Loss vs. Step", fontsize=22)
-    ax.plot(steps, loss, "r-",  label="loss") 
-    if acc:
-        ax.plot(steps, acc,   "r--", label="Accuracy") 
-    ax.set_xlabel("Steps")
-    ax.set_ylabel("Loss - Categorical Crossentropy")
-    leg = ax.legend(frameon=True, fontsize=18)
-    return fig
-
-
-# ------------------------------------------------------------------------------
-
-
-
-
-# %% Main (Test Case)
-# ------------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    print("Running `wrappers` test case.")
-    print("-----------------------------")
 
 # ------------------------------------------------------------------------------
