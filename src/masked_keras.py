@@ -237,7 +237,7 @@ class TrackableMaskedModel(MaskedModel):
     def __override_forward(self,
         layer: keras.layers.Layer, 
         mask_idx: int, 
-        masked_forwad: Callable) -> int:
+        masked_forward: Callable) -> int:
         """Abbreviator to override forward passes.
 
         Returns
@@ -247,7 +247,7 @@ class TrackableMaskedModel(MaskedModel):
         print("Masking", layer, sep=" ")
         mask_idx_up = mask_idx + len(layer.weights)
         layer.masks = self.masks[mask_idx : mask_idx_up]
-        layer.call = masked_forwad
+        layer.call = masked_forward
         return mask_idx_up
 
 
