@@ -190,16 +190,22 @@ def compute_prospr_scores_from_meta_g(meta_gradients: list[np.ndarray]):
 
 
 
-## Pruning Mask Generatirs
+## Pruning Mask Generators
 # ------------------------------------------------------------------------------
+
 def generate_total_pruning_mask(
     scores,
     keep_top: float=0.2):
     """Generates total (not layer-wise) pruning masks from scores. 
     """
-    flattened_scores = np.concatenate([
-        score.numpy().flatten() for score in scores
-    ])
+    if isinstance(scores[0], tf.Tensor):
+        flattened_scores = np.concatenate([
+            score.numpy().flatten() for score in scores
+        ])
+    if isinstance(scores[0], np.ndarray):
+        flattened_scores = np.concatenate([
+            score.flatten() for score in scores
+        ])
     quantile = np.quantile(flattened_scores, q=1-keep_top)
 
     masks = []
@@ -216,9 +222,11 @@ def generate_pruning_mask(
     dtype=tf.float32):
     """Generates layer-wise pruning masks from scores.
     """
+    if isinstance(scores[0], tf.Tensor):
+        scores = [score.numpy() for score in scores]
     masks = []
     for score in scores:
-        score_flat = score.numpy().flatten()
+        score_flat = score.flatten()
         quantile = np.quantile(
             score_flat, 
             q=np.clip(sparsity, a_min=0., a_max=1.))
